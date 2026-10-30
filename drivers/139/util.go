@@ -648,41 +648,55 @@ func (d *Yun139) shareGetFilesWithRef(ref shareRef, pCaID string) ([]model.Obj, 
 	if pCaID == "" {
 		pCaID = ref.NodeID
 	}
-	data := base.Json{
-		"getOutLinkInfoReq": base.Json{
-			"account": d.getAccount(),
-			"linkID":  ref.LinkID,
-			"passwd":  ref.Password,
-			"pCaID":   pCaID,
-		},
-	}
-	var resp ShareListResp
-	_, err := d.sharePost("/richlifeApp/devapp/IOutLink/getOutLinkInfoV6", data, &resp)
-	if err != nil {
-		return nil, err
-	}
+	start := 0
+	limit := 100
 	files := make([]model.Obj, 0)
-	for _, catalog := range resp.Data.CaLst {
-		modTime, _ := time.ParseInLocation("20060102150405", catalog.UdTime, utils.CNLoc)
-		f := model.Object{
-			ID:       encodeShareRef(ref.LinkID, ref.Password, catalog.CaID),
-			Name:     catalog.CaName,
-			Modified: modTime,
-			IsFolder: true,
+	for {
+		data := base.Json{
+			"getOutLinkInfoReq": base.Json{
+				"account": d.getAccount(),
+				"linkID":  ref.LinkID,
+				"passwd":  ref.Password,
+				"pCaID":   pCaID,
+				"bNum":    start + 1,
+				"eNum":    start + limit,
+			},
 		}
-		files = append(files, &f)
-	}
-	for _, content := range resp.Data.CoLst {
-		name := content.CoName
-		size := content.CoSize
-		modTime, _ := time.ParseInLocation("20060102150405", content.UdTime, utils.CNLoc)
-		f := model.Object{
-			ID:       encodeShareRef(ref.LinkID, ref.Password, content.CoID),
-			Name:     name,
-			Size:     size,
-			Modified: modTime,
+		var resp ShareListResp
+		_, err := d.sharePost("/richlifeApp/devapp/IOutLink/getOutLinkInfoV6", data, &resp)
+		if err != nil {
+			return nil, err
 		}
-		files = append(files, &f)
+		batchCount := len(resp.Data.CaLst) + len(resp.Data.CoLst)
+		if batchCount == 0 {
+			break
+		}
+		for _, catalog := range resp.Data.CaLst {
+			modTime, _ := time.ParseInLocation("20060102150405", catalog.UdTime, utils.CNLoc)
+			f := model.Object{
+				ID:       encodeShareRef(ref.LinkID, ref.Password, catalog.CaID),
+				Name:     catalog.CaName,
+				Modified: modTime,
+				IsFolder: true,
+			}
+			files = append(files, &f)
+		}
+		for _, content := range resp.Data.CoLst {
+			name := content.CoName
+			size := content.CoSize
+			modTime, _ := time.ParseInLocation("20060102150405", content.UdTime, utils.CNLoc)
+			f := model.Object{
+				ID:       encodeShareRef(ref.LinkID, ref.Password, content.CoID),
+				Name:     name,
+				Size:     size,
+				Modified: modTime,
+			}
+			files = append(files, &f)
+		}
+		if batchCount < limit {
+			break
+		}
+		start += limit
 	}
 
 	return files, nil
