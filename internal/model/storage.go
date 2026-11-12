@@ -13,7 +13,7 @@ type Storage struct {
 	CacheExpiration     int       `json:"cache_expiration"`                            // cache expire time
 	CustomCachePolicies string    `json:"custom_cache_policies" gorm:"type:text"`
 	Status              string    `json:"status"`
-	Addition            string    `json:"addition" gorm:"type:text"` // Additional information, defined in the corresponding driver
+	Addition            string    `json:"addition" gorm:"type:longtext"` // Additional information, defined in the corresponding driver
 	Remark              string    `json:"remark"`
 	Modified            time.Time `json:"modified"`
 	Disabled            bool      `json:"disabled"` // if disabled

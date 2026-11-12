@@ -8,6 +8,7 @@ import (
 	crypto_rand "crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
@@ -575,7 +577,29 @@ func decodeShareRef(id string) (shareRef, bool) {
 	return shareRef{LinkID: linkID, Password: password, NodeID: nodeID}, true
 }
 
+var (
+	shareRefsCache sync.Map // map[string][]shareRef
+	shareURLRegex  = regexp.MustCompile(`(?i)(?:/shareweb/#/w/i/|/w/#/detail\?linkID=)([a-zA-Z0-9]+)`)
+)
+
+func deduplicateShareRefs(refs []shareRef) []shareRef {
+	if len(refs) <= 1 {
+		return refs
+	}
+	seen := make(map[string]struct{}, len(refs))
+	result := make([]shareRef, 0, len(refs))
+	for _, r := range refs {
+		key := r.LinkID + "\x00" + r.Password + "\x00" + r.NodeID
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
 func encodeShareRefs(refs []shareRef) string {
+	refs = deduplicateShareRefs(refs)
 	if len(refs) == 1 {
 		ref := refs[0]
 		return encodeShareRef(ref.LinkID, ref.Password, ref.NodeID)
@@ -584,10 +608,22 @@ func encodeShareRefs(refs []shareRef) string {
 	if err != nil {
 		return ""
 	}
-	return multiShareRefPrefix + base64.RawURLEncoding.EncodeToString(data)
+	encoded := multiShareRefPrefix + base64.RawURLEncoding.EncodeToString(data)
+	if len(encoded) > 512 {
+		h := sha256.Sum256([]byte(encoded))
+		key := multiShareRefPrefix + "cache:" + hex.EncodeToString(h[:16])
+		shareRefsCache.Store(key, refs)
+		return key
+	}
+	return encoded
 }
 
 func decodeShareRefs(id string) ([]shareRef, bool) {
+	if cached, ok := shareRefsCache.Load(id); ok {
+		if refs, ok := cached.([]shareRef); ok {
+			return refs, true
+		}
+	}
 	if !strings.HasPrefix(id, multiShareRefPrefix) {
 		ref, ok := decodeShareRef(id)
 		if !ok {
@@ -606,6 +642,25 @@ func decodeShareRefs(id string) ([]shareRef, bool) {
 	return refs, true
 }
 
+func parseShareEntry(part string) (linkID, password string) {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return "", ""
+	}
+	if matches := shareURLRegex.FindStringSubmatch(part); len(matches) > 1 {
+		linkID = matches[1]
+		after := part[strings.Index(part, matches[0])+len(matches[0]):]
+		if idx := strings.Index(after, "#"); idx != -1 {
+			password = strings.TrimSpace(after[idx+1:])
+		}
+		return linkID, password
+	}
+	if l, p, ok := strings.Cut(part, "#"); ok {
+		return strings.TrimSpace(l), strings.TrimSpace(p)
+	}
+	return part, ""
+}
+
 func (d *Yun139) shareEntries() []struct{ LinkID, Password string } {
 	raw := strings.TrimSpace(d.LinkID)
 	if raw == "" {
@@ -616,17 +671,9 @@ func (d *Yun139) shareEntries() []struct{ LinkID, Password string } {
 	})
 	entries := make([]struct{ LinkID, Password string }, 0, len(parts))
 	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		entry := struct{ LinkID, Password string }{LinkID: part}
-		if linkID, password, ok := strings.Cut(part, "#"); ok {
-			entry.LinkID = strings.TrimSpace(linkID)
-			entry.Password = strings.TrimSpace(password)
-		}
-		if entry.LinkID != "" {
-			entries = append(entries, entry)
+		linkID, password := parseShareEntry(part)
+		if linkID != "" {
+			entries = append(entries, struct{ LinkID, Password string }{LinkID: linkID, Password: password})
 		}
 	}
 	return entries
@@ -665,6 +712,10 @@ func (d *Yun139) shareGetFilesWithRef(ref shareRef, pCaID string) ([]model.Obj, 
 		var resp ShareListResp
 		_, err := d.sharePost("/richlifeApp/devapp/IOutLink/getOutLinkInfoV6", data, &resp)
 		if err != nil {
+			if len(files) > 0 {
+				log.Warnf("[139Share] pagination error at %d for link %s: %v, returning %d partial items", start, ref.LinkID, err, len(files))
+				return files, nil
+			}
 			return nil, err
 		}
 		batchCount := len(resp.Data.CaLst) + len(resp.Data.CoLst)
@@ -702,19 +753,51 @@ func (d *Yun139) shareGetFilesWithRef(ref shareRef, pCaID string) ([]model.Obj, 
 	return files, nil
 }
 
+type shareMergeResult struct {
+	items []model.Obj
+	err   error
+}
+
 func (d *Yun139) shareGetMergedFiles(refs []shareRef) ([]model.Obj, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	if len(refs) == 1 {
+		return d.shareGetFilesWithRef(refs[0], refs[0].NodeID)
+	}
+
+	maxWorkers := 16
+	if len(refs) < maxWorkers {
+		maxWorkers = len(refs)
+	}
+
+	results := make([]shareMergeResult, len(refs))
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
+	for i, ref := range refs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, r shareRef) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			items, err := d.shareGetFilesWithRef(r, r.NodeID)
+			results[idx] = shareMergeResult{items: items, err: err}
+		}(i, ref)
+	}
+	wg.Wait()
+
 	files := make([]model.Obj, 0)
 	indices := make(map[string]int)
 	var firstErr error
-	for _, ref := range refs {
-		items, err := d.shareGetFilesWithRef(ref, ref.NodeID)
-		if err != nil {
+	for _, res := range results {
+		if res.err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = res.err
 			}
 			continue
 		}
-		for _, item := range items {
+		for _, item := range res.items {
 			idx, exists := indices[item.GetName()]
 			if !exists {
 				indices[item.GetName()] = len(files)
@@ -1936,6 +2019,12 @@ func (d *Yun139) credentialState() (credentialState, error) {
 	}
 
 	return 0, fmt.Errorf("authorization is empty and credentials are not provided")
+}
+
+func (d *Yun139) hasAnyCredentials() bool {
+	return strings.TrimSpace(d.Authorization) != "" ||
+		strings.TrimSpace(d.MailCookies) != "" ||
+		(strings.TrimSpace(d.Username) != "" && strings.TrimSpace(d.Password) != "")
 }
 
 func (d *Yun139) loginWithPassword() (string, error) {

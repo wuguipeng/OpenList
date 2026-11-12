@@ -7,11 +7,11 @@ import (
 
 type Addition struct {
 	//Account       string `json:"account" required:"true"`
-	Authorization string `json:"authorization" type:"text" help:"Authorization can be used alone. If empty, use username + password; mail_cookies is optional and will be established/updated automatically. Existing mail_cookies can also be used alone for fast login."`
-	Username      string `json:"username" help:"Use together with password when Authorization is empty. mail_cookies may be left empty on the first login."`
-	Password      string `json:"password" secret:"true" help:"Use together with username when Authorization is empty. mail_cookies may be left empty on the first login."`
+	Authorization string `json:"authorization" type:"text" help:"Authorization can be used alone. If empty, use mail_cookies alone for fast login, or mail_cookies + username + password for full login fallback."`
+	Username      string `json:"username" help:"Use together with password and mail_cookies for full login fallback when Authorization is empty."`
+	Password      string `json:"password" secret:"true" help:"Use together with username and mail_cookies for full login fallback when Authorization is empty."`
 	SmsCode       string `json:"sms_code" secret:"true" help:"Fill this only after OpenList reports that a 139 Mail SMS verification code was sent, then save the storage again."`
-	MailCookies   string `json:"mail_cookies" type:"text" help:"Optional cookies from mail.10086.cn. Leave empty for a first username/password login; cookies created or updated by password/SMS login are persisted and reused as device context. Existing cookies may also be used alone for fast login."`
+	MailCookies   string `json:"mail_cookies" type:"text" help:"Optional cookies from mail.10086.cn. Used alone for fast login, or together with username and password for full login fallback."`
 	driver.RootID
 	Type                 string `json:"type" type:"select" options:"personal_new,family,group,personal,share" default:"personal_new"`
 	LinkID               string `json:"link_id" type:"text" help:"Multiple shares are separated by commas or new lines. Use link_id#password for password-protected shares."`

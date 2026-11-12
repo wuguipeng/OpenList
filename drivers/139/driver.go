@@ -51,6 +51,10 @@ func (d *Yun139) Init(ctx context.Context) error {
 			if err := d.validateAndInitCredentials(); err != nil {
 				return err
 			}
+		} else if d.hasAnyCredentials() {
+			if err := d.validateAndInitCredentials(); err != nil {
+				return err
+			}
 		}
 		if d.Authorization != "" {
 			err := d.refreshToken()
@@ -58,38 +62,40 @@ func (d *Yun139) Init(ctx context.Context) error {
 				return err
 			}
 
-			// Query Route Policy
-			var resp QueryRoutePolicyResp
-			_, err = d.requestRoute(base.Json{
-				"userInfo": base.Json{
-					"userType":    1,
-					"accountType": 1,
-					"accountName": d.Account,
-				},
-				"modAddrType": 1,
-			}, &resp)
-			if err != nil {
-				return err
-			}
-			for _, policyItem := range resp.Data.RoutePolicyList {
-				switch policyItem.ModName {
-				case "personal":
-					d.PersonalCloudHost = policyItem.HttpsUrl
-				case "group":
-					d.GroupCloudHost = policyItem.HttpsUrl
-				case "family":
-					d.FamilyCloudHost = policyItem.HttpsUrl
+			// Query Route Policy only for storage types that require cloud host routing
+			if !d.isShare() {
+				var resp QueryRoutePolicyResp
+				_, err = d.requestRoute(base.Json{
+					"userInfo": base.Json{
+						"userType":    1,
+						"accountType": 1,
+						"accountName": d.Account,
+					},
+					"modAddrType": 1,
+				}, &resp)
+				if err != nil {
+					return err
 				}
-			}
-			if len(d.PersonalCloudHost) == 0 {
-				return fmt.Errorf("PersonalCloudHost is empty")
-			}
-			if d.isGroup() || d.isFamily() {
-				if len(d.GroupCloudHost) == 0 {
-					return fmt.Errorf("GroupCloudHost is empty")
+				for _, policyItem := range resp.Data.RoutePolicyList {
+					switch policyItem.ModName {
+					case "personal":
+						d.PersonalCloudHost = policyItem.HttpsUrl
+					case "group":
+						d.GroupCloudHost = policyItem.HttpsUrl
+					case "family":
+						d.FamilyCloudHost = policyItem.HttpsUrl
+					}
 				}
-				if len(d.FamilyCloudHost) == 0 {
-					return fmt.Errorf("FamilyCloudHost is empty")
+				if len(d.PersonalCloudHost) == 0 {
+					return fmt.Errorf("PersonalCloudHost is empty")
+				}
+				if d.isGroup() || d.isFamily() {
+					if len(d.GroupCloudHost) == 0 {
+						return fmt.Errorf("GroupCloudHost is empty")
+					}
+					if len(d.FamilyCloudHost) == 0 {
+						return fmt.Errorf("FamilyCloudHost is empty")
+					}
 				}
 			}
 
